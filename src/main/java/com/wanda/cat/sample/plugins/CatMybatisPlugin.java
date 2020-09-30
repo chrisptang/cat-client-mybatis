@@ -10,11 +10,7 @@ import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.mapping.ParameterMapping;
 import org.apache.ibatis.mapping.SqlCommandType;
-import org.apache.ibatis.plugin.Interceptor;
-import org.apache.ibatis.plugin.Intercepts;
-import org.apache.ibatis.plugin.Invocation;
-import org.apache.ibatis.plugin.Plugin;
-import org.apache.ibatis.plugin.Signature;
+import org.apache.ibatis.plugin.*;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.ResultHandler;
@@ -22,22 +18,21 @@ import org.apache.ibatis.session.RowBounds;
 import org.apache.ibatis.type.TypeHandlerRegistry;
 import org.mybatis.spring.transaction.SpringManagedTransaction;
 import org.springframework.util.ReflectionUtils;
+import org.springframework.util.StopWatch;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.text.DateFormat;
-import java.util.Date;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 
 /**
  * 对MyBatis进行拦截，添加Cat监控
+ *
  * @author Steven
+ * @updated_by ptang@leqee.com @ 2020-09-30
  */
 @Intercepts({
         @Signature(method = "query", type = Executor.class, args = {
@@ -47,27 +42,31 @@ import java.util.regex.Matcher;
 })
 public class CatMybatisPlugin implements Interceptor {
 
+    private Properties properties;
+
+    private volatile long slowSqlMillis = 10_000L; //default to be 10 seconds.
+
     private static Log logger = LogFactory.getLog(CatMybatisPlugin.class);
 
     //缓存，提高性能
-    private static final Map<String, String> sqlURLCache = new ConcurrentHashMap<String, String>(256);
+    private static final Map<String, String> SQL_URL_CACHE = new ConcurrentHashMap<String, String>(256);
 
     private static final String EMPTY_CONNECTION = "jdbc:mysql://unknown:3306/%s?useUnicode=true";
 
     private Executor target;
 
     // druid 数据源的类名称
-    private static final String DruidDataSourceClassName = "com.alibaba.druid.pool.DruidDataSource";
+    private static final String DRUID_DATA_SOURCE_CLASS_NAME = "com.alibaba.druid.pool.DruidDataSource";
     // dbcp 数据源的类名称
-    private static final String DBCPBasicDataSourceClassName = "org.apache.commons.dbcp.BasicDataSource";
+    private static final String DBCP_BASIC_DATA_SOURCE_CLASS_NAME = "org.apache.commons.dbcp.BasicDataSource";
     // dbcp2 数据源的类名称
-    private static final String DBCP2BasicDataSourceClassName = "org.apache.commons.dbcp2.BasicDataSource";
+    private static final String DBCP_2_BASIC_DATA_SOURCE_CLASS_NAME = "org.apache.commons.dbcp2.BasicDataSource";
     // c3p0 数据源的类名称
-    private static final String C3P0ComboPooledDataSourceClassName = "com.mchange.v2.c3p0.ComboPooledDataSource";
+    private static final String C_3_P_0_COMBO_POOLED_DATA_SOURCE_CLASS_NAME = "com.mchange.v2.c3p0.ComboPooledDataSource";
     // HikariCP 数据源的类名称
-    private static final String HikariCPDataSourceClassName = "com.zaxxer.hikari.HikariDataSource";
+    private static final String HIKARI_CP_DATA_SOURCE_CLASS_NAME = "com.zaxxer.hikari.HikariDataSource";
     // BoneCP 数据源的类名称
-    private static final String BoneCPDataSourceClassName = "com.jolbox.bonecp.BoneCPDataSource";
+    private static final String BONE_CP_DATA_SOURCE_CLASS_NAME = "com.jolbox.bonecp.BoneCPDataSource";
 
     @Override
     public Object intercept(Invocation invocation) throws Throwable {
@@ -91,15 +90,21 @@ public class CatMybatisPlugin implements Interceptor {
         SqlCommandType sqlCommandType = mappedStatement.getSqlCommandType();
         Cat.logEvent("SQL.Method", sqlCommandType.name().toLowerCase(), Message.SUCCESS, sql);
 
-        String s = this.getSQLDatabase();
-        Cat.logEvent("SQL.Database", s);
+        String sqlDatabase = this.getSQLDatabase();
+        Cat.logEvent("SQL.Database", sqlDatabase);
 
         Object returnObj = null;
+        StopWatch stopWatch = new StopWatch();
         try {
+            stopWatch.start();
             returnObj = invocation.proceed();
+            stopWatch.stop();
             t.setStatus(Transaction.SUCCESS);
-        } catch (Exception e) {
-            Cat.logError(e);
+
+            // 统计慢SQL；
+            if (stopWatch.getLastTaskTimeMillis() >= slowSqlMillis) {
+                Cat.logEvent("SQL.SlowSQL", methodName, Message.SUCCESS, sql);
+            }
         } finally {
             t.complete();
         }
@@ -145,23 +150,23 @@ public class CatMybatisPlugin implements Interceptor {
             // 处理常见的数据源
             switch (dataSource.getClass().getName()) {
                 // druid
-                case DruidDataSourceClassName:
-                    return getDataSourceSqlURL(dataSource, DruidDataSourceClassName, "getUrl");
+                case DRUID_DATA_SOURCE_CLASS_NAME:
+                    return getDataSourceSqlURL(dataSource, DRUID_DATA_SOURCE_CLASS_NAME, "getUrl");
                 // dbcp
-                case DBCPBasicDataSourceClassName:
-                    return getDataSourceSqlURL(dataSource, DBCPBasicDataSourceClassName, "getUrl");
+                case DBCP_BASIC_DATA_SOURCE_CLASS_NAME:
+                    return getDataSourceSqlURL(dataSource, DBCP_BASIC_DATA_SOURCE_CLASS_NAME, "getUrl");
                 // dbcp2
-                case DBCP2BasicDataSourceClassName:
-                    return getDataSourceSqlURL(dataSource, DBCP2BasicDataSourceClassName, "getUrl");
+                case DBCP_2_BASIC_DATA_SOURCE_CLASS_NAME:
+                    return getDataSourceSqlURL(dataSource, DBCP_2_BASIC_DATA_SOURCE_CLASS_NAME, "getUrl");
                 // c3p0
-                case C3P0ComboPooledDataSourceClassName:
-                    return getDataSourceSqlURL(dataSource, C3P0ComboPooledDataSourceClassName, "getJdbcUrl");
+                case C_3_P_0_COMBO_POOLED_DATA_SOURCE_CLASS_NAME:
+                    return getDataSourceSqlURL(dataSource, C_3_P_0_COMBO_POOLED_DATA_SOURCE_CLASS_NAME, "getJdbcUrl");
                 // HikariCP
-                case HikariCPDataSourceClassName:
-                    return getDataSourceSqlURL(dataSource, HikariCPDataSourceClassName, "getJdbcUrl");
+                case HIKARI_CP_DATA_SOURCE_CLASS_NAME:
+                    return getDataSourceSqlURL(dataSource, HIKARI_CP_DATA_SOURCE_CLASS_NAME, "getJdbcUrl");
                 // BoneCP
-                case BoneCPDataSourceClassName:
-                    return getDataSourceSqlURL(dataSource, BoneCPDataSourceClassName, "getJdbcUrl");
+                case BONE_CP_DATA_SOURCE_CLASS_NAME:
+                    return getDataSourceSqlURL(dataSource, BONE_CP_DATA_SOURCE_CLASS_NAME, "getJdbcUrl");
             }
         }
         return null;
@@ -173,14 +178,14 @@ public class CatMybatisPlugin implements Interceptor {
      * @param dataSource                 数据源
      * @param runtimeDataSourceClassName 运行时真实的数据源的类名称
      * @param sqlURLMethodName           获取SQL地址的方法名称
-     *
      * @author fanlychie (https://github.com/fanlychie)
      */
     private String getDataSourceSqlURL(DataSource dataSource, String runtimeDataSourceClassName, String sqlURLMethodName) {
         Class<?> dataSourceClass = null;
         try {
             dataSourceClass = Class.forName(runtimeDataSourceClassName);
-        } catch (ClassNotFoundException e) {}
+        } catch (ClassNotFoundException e) {
+        }
         Method sqlURLMethod = ReflectionUtils.findMethod(dataSourceClass, sqlURLMethodName);
         return (String) ReflectionUtils.invokeMethod(sqlURLMethod, dataSource);
     }
@@ -191,7 +196,7 @@ public class CatMybatisPlugin implements Interceptor {
         if (dbName == null) {
             dbName = "DEFAULT";
         }
-        String url = CatMybatisPlugin.sqlURLCache.get(dbName);
+        String url = CatMybatisPlugin.SQL_URL_CACHE.get(dbName);
         if (url != null) {
             return url;
         }
@@ -200,7 +205,7 @@ public class CatMybatisPlugin implements Interceptor {
         if (url == null) {
             url = String.format(EMPTY_CONNECTION, dbName);
         }
-        CatMybatisPlugin.sqlURLCache.put(dbName, url);
+        CatMybatisPlugin.SQL_URL_CACHE.put(dbName, url);
         return url;
     }
 
@@ -272,6 +277,9 @@ public class CatMybatisPlugin implements Interceptor {
 
     @Override
     public void setProperties(Properties properties) {
+        this.properties = properties;
+        if (this.properties.containsKey("slowSqlMillis")) {
+            this.slowSqlMillis = Long.parseLong(this.properties.getProperty("slowSqlMillis", "10000"));
+        }
     }
-
 }
