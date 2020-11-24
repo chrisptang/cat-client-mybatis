@@ -208,6 +208,8 @@ public class CatMybatisPlugin implements Interceptor {
         url = this.getSqlURL();//目前监控只支持mysql ,其余数据库需要各自修改监控服务端
         if (url == null) {
             url = String.format(EMPTY_CONNECTION, dbName);
+        } else if (url.indexOf("?") > 0) {
+            url = url.substring(0, Math.min(url.length(), url.indexOf("?") + 1));
         }
         CatMybatisPlugin.SQL_URL_CACHE.put(dbName, url);
         return url;
