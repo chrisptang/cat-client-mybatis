@@ -75,7 +75,7 @@ public class CatMybatisPlugin implements Interceptor {
         String[] strArr = mappedStatement.getId().split("\\.");
         String methodName = strArr[strArr.length - 2] + "." + strArr[strArr.length - 1];
 
-        Transaction t = Cat.newTransaction("SQL", methodName);
+        Transaction transaction = Cat.newTransaction("SQL", methodName);
 
         //得到sql语句
         Object parameter = null;
@@ -99,14 +99,18 @@ public class CatMybatisPlugin implements Interceptor {
             stopWatch.start();
             returnObj = invocation.proceed();
             stopWatch.stop();
-            t.setStatus(Transaction.SUCCESS);
+            transaction.setStatus(Message.SUCCESS);
 
             // 统计慢SQL；
             if (stopWatch.getLastTaskTimeMillis() >= slowSqlMillis) {
                 Cat.logEvent("SQL.SlowSQL", methodName, Message.SUCCESS, sql);
             }
+        } catch (Throwable t) {
+            transaction.setStatus(t);
+            Cat.logError("SQL error:\n" + sql, t);
+            throw t;
         } finally {
-            t.complete();
+            transaction.complete();
         }
 
         return returnObj;
